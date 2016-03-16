@@ -18,21 +18,15 @@ var _ = function (input, o) {
 
 	o = o || {};
 
-	configure.call(this, {
+	configure(this, {
 		minChars: 2,
 		maxItems: 10,
 		autoFirst: false,
+		data: _.DATA,
 		filter: _.FILTER_CONTAINS,
 		sort: _.SORT_BYLENGTH,
-		item: function (text, input) {
-			return $.create("li", {
-				innerHTML: text.replace(RegExp($.regExpEscape(input.trim()), "gi"), "<mark>$&</mark>"),
-				"aria-selected": "false"
-			});
-		},
-		replace: function (text) {
-			this.input.value = text;
-		}
+		item: _.ITEM,
+		replace: _.REPLACE
 	}, o);
 
 	this.index = -1;
@@ -45,7 +39,7 @@ var _ = function (input, o) {
 	});
 
 	this.ul = $.create("ul", {
-		hidden: "",
+		hidden: "hidden",
 		inside: this.container
 	});
 
@@ -94,15 +88,16 @@ var _ = function (input, o) {
 				li = li.parentNode;
 			}
 
-			if (li) {
-				me.select(li);
+			if (li && evt.button === 0) {  // Only select on left click
+				evt.preventDefault();
+				me.select(li, evt.target);
 			}
 		}
 	}});
 
 	if (this.input.hasAttribute("list")) {
-		this.list = "#" + input.getAttribute("list");
-		input.removeAttribute("list");
+		this.list = "#" + this.input.getAttribute("list");
+		this.input.removeAttribute("list");
 	}
 	else {
 		this.list = this.input.getAttribute("data-list") || o.list || [];
@@ -123,9 +118,18 @@ _.prototype = {
 			list = $(list);
 
 			if (list && list.children) {
-				this._list = slice.apply(list.children).map(function (el) {
-					return el.textContent.trim();
+				var items = [];
+				slice.apply(list.children).forEach(function (el) {
+					if (!el.disabled) {
+						var text = el.textContent.trim();
+						var value = el.value || text;
+						var label = el.label || text;
+						if (value !== "") {
+							items.push({ label: label, value: value });
+						}
+					}
 				});
+				this._list = items;
 			}
 		}
 
@@ -139,7 +143,7 @@ _.prototype = {
 	},
 
 	get opened() {
-		return this.ul && this.ul.getAttribute("hidden") == null;
+		return !this.ul.hasAttribute("hidden");
 	},
 
 	close: function () {
@@ -186,26 +190,32 @@ _.prototype = {
 			this.status.textContent = lis[i].textContent;
 		}
 
-		$.fire(this.input, "awesomplete-highlight");
+		$.fire(this.input, "awesomplete-highlight", {
+			text: this.suggestions[this.index]
+		});
 	},
 
-	select: function (selected) {
-		selected = selected || this.ul.children[this.index];
+	select: function (selected, origin) {
+		if (selected) {
+			this.index = $.siblingIndex(selected);
+		} else {
+			selected = this.ul.children[this.index];
+		}
 
 		if (selected) {
-			var prevented;
+			var suggestion = this.suggestions[this.index];
 
-			$.fire(this.input, "awesomplete-select", {
-				text: selected.textContent,
-				preventDefault: function () {
-					prevented = true;
-				}
+			var allowed = $.fire(this.input, "awesomplete-select", {
+				text: suggestion,
+				origin: origin || selected
 			});
 
-			if (!prevented) {
-				this.replace(selected.textContent);
+			if (allowed) {
+				this.replace(suggestion);
 				this.close();
-				$.fire(this.input, "awesomplete-selectcomplete");
+				$.fire(this.input, "awesomplete-selectcomplete", {
+					text: suggestion
+				});
 			}
 		}
 	},
@@ -219,15 +229,18 @@ _.prototype = {
 			// Populate list with options that match
 			this.ul.innerHTML = "";
 
-			this._list
+			this.suggestions = this._list
+				.map(function(item) {
+					return new Suggestion(me.data(item, value));
+				})
 				.filter(function(item) {
 					return me.filter(item, value);
 				})
 				.sort(this.sort)
-				.every(function(text, i) {
-					me.ul.appendChild(me.item(text, value));
+				.slice(0, this.maxItems);
 
-					return i < me.maxItems - 1;
+			this.suggestions.forEach(function(text) {
+					me.ul.appendChild(me.item(text, value));
 				});
 
 			if (this.ul.children.length === 0) {
@@ -262,28 +275,57 @@ _.SORT_BYLENGTH = function (a, b) {
 	return a < b? -1 : 1;
 };
 
+_.ITEM = function (text, input) {
+	var html = input === '' ? text : text.replace(RegExp($.regExpEscape(input.trim()), "gi"), "<mark>$&</mark>");
+	return $.create("li", {
+		innerHTML: html,
+		"aria-selected": "false"
+	});
+};
+
+_.REPLACE = function (text) {
+	this.input.value = text.value;
+};
+
+_.DATA = function (item/*, input*/) { return item; };
+
 // Private functions
 
-function configure(properties, o) {
+function Suggestion(data) {
+	var o = Array.isArray(data)
+	  ? { label: data[0], value: data[1] }
+	  : typeof data === "object" && "label" in data && "value" in data ? data : { label: data, value: data };
+
+	this.label = o.label || o.value;
+	this.value = o.value;
+}
+Object.defineProperty(Suggestion.prototype = Object.create(String.prototype), "length", {
+	get: function() { return this.label.length; }
+});
+Suggestion.prototype.toString = Suggestion.prototype.valueOf = function () {
+	return "" + this.label;
+};
+
+function configure(instance, properties, o) {
 	for (var i in properties) {
 		var initial = properties[i],
-		    attrValue = this.input.getAttribute("data-" + i.toLowerCase());
+		    attrValue = instance.input.getAttribute("data-" + i.toLowerCase());
 
 		if (typeof initial === "number") {
-			this[i] = parseInt(attrValue);
+			instance[i] = parseInt(attrValue);
 		}
 		else if (initial === false) { // Boolean options must be false by default anyway
-			this[i] = attrValue !== null;
+			instance[i] = attrValue !== null;
 		}
 		else if (initial instanceof Function) {
-			this[i] = null;
+			instance[i] = null;
 		}
 		else {
-			this[i] = attrValue;
+			instance[i] = attrValue;
 		}
 
-		if (!this[i] && this[i] !== 0) {
-			this[i] = (i in o)? o[i] : initial;
+		if (!instance[i] && instance[i] !== 0) {
+			instance[i] = (i in o)? o[i] : initial;
 		}
 	}
 }
@@ -346,23 +388,29 @@ $.fire = function(target, type, properties) {
 		evt[j] = properties[j];
 	}
 
-	target.dispatchEvent(evt);
+	return target.dispatchEvent(evt);
 };
 
 $.regExpEscape = function (s) {
 	return s.replace(/[-\\^$*+?.()|[\]{}]/g, "\\$&");
-}
+};
+
+$.siblingIndex = function (el) {
+	/* eslint-disable no-cond-assign */
+	for (var i = 0; el = el.previousElementSibling; i++);
+	return i;
+};
 
 // Initialization
 
 function init() {
 	$$("input.awesomplete").forEach(function (input) {
-		new Awesomplete(input);
+		new _(input);
 	});
 }
 
 // Are we in a browser? Check for Document constructor
-if (typeof Document !== 'undefined') {
+if (typeof Document !== "undefined") {
 	// DOM already loaded?
 	if (document.readyState !== "loading") {
 		init();
@@ -377,12 +425,12 @@ _.$ = $;
 _.$$ = $$;
 
 // Make sure to export Awesomplete on self when in a browser
-if (typeof self !== 'undefined') {
+if (typeof self !== "undefined") {
 	self.Awesomplete = _;
 }
 
 // Expose Awesomplete as a CJS module
-if (typeof exports === 'object') {
+if (typeof module === "object" && module.exports) {
 	module.exports = _;
 }
 
